@@ -17,6 +17,7 @@ from .errors import (
     OutputLimitError,
     RatioLimitError,
     SpillgateError,
+    fresh,
 )
 from .limits import EffectiveLimits
 
@@ -89,7 +90,7 @@ class LayerGuard:
         if self._done is _END:
             return b""
         assert isinstance(self._done, SpillgateError)
-        raise self._done
+        raise fresh(self._done)
 
     def _probe(self) -> bytes:
         """The budget is used up: is there one more byte? (SG-R-LAY-03)
@@ -116,11 +117,11 @@ class LayerGuard:
             data = self._as_bytes(self._codec.read(n), n)
         except SpillgateError as error:
             failure = error.with_layer(self._layer)
-            self._done = failure
+            self._done = fresh(failure)
             raise failure from failure.__cause__
         except Exception as error:
             failure = self._classify(error)
-            self._done = failure
+            self._done = fresh(failure)
             raise failure from (failure.__cause__ or error)
         return data
 

@@ -25,6 +25,7 @@ from .errors import (
     InternalError,
     SourceError,
     SpillgateError,
+    fresh,
 )
 
 BUFFER_SIZE = 4096  # well below the 64 KiB look-ahead tolerance of SG-R-RAT-02
@@ -77,7 +78,7 @@ class InputMeter:
             InternalError: the source broke its contract.
         """
         if self._failure is not None:
-            raise self._failure
+            raise fresh(self._failure)
         if n <= 0:
             return b""
         if self._pos == len(self._pending) and not self._fill():
@@ -88,7 +89,7 @@ class InputMeter:
                 layer=self._layer,
                 limit=self._max_input,
             )
-            raise self._failure
+            raise fresh(self._failure)
         count = min(n, len(self._pending) - self._pos)
         if self._max_input:
             count = min(count, self._max_input - self._consumed)
@@ -137,7 +138,7 @@ class InputMeter:
         stop = poll(self._cancel, self._layer)
         if stop is not None:
             self._failure = stop
-            raise stop
+            raise fresh(stop)
         want = self._fetch_size()
         if want < 1:
             # Everything allowed, probe included, was fetched already.
@@ -146,7 +147,7 @@ class InputMeter:
                 layer=self._layer,
                 limit=self._max_input,
             )
-            raise self._failure
+            raise fresh(self._failure)
         for _ in range(MAX_EMPTY_READS):
             chunk = self._read_source(want)
             if chunk is None:
@@ -158,7 +159,7 @@ class InputMeter:
             self._fetched += len(chunk)
             return True
         self._failure = InternalError("the source made no progress", layer=self._layer)
-        raise self._failure
+        raise fresh(self._failure)
 
     def _fetch_size(self) -> int:
         """With a cap, never ask for more than ``max_input + 1`` bytes in total (SG-R-INP-02)."""
@@ -173,7 +174,7 @@ class InputMeter:
             chunk = self._source.read(want)
         except SpillgateError as error:
             # The source is the previous layer of a chain: its error passes through.
-            self._failure = error
+            self._failure = fresh(error)
             raise
         except Exception as error:
             self.source_error = error
@@ -181,18 +182,18 @@ class InputMeter:
                 f"the source raised {type(error).__name__}", layer=self._layer
             )
             self._failure.__cause__ = error
-            raise self._failure from error
+            raise fresh(self._failure) from error
         if chunk is None:
             return None
         if not isinstance(chunk, bytes | bytearray | memoryview):
             self._failure = InternalError(
                 f"the source returned {type(chunk).__name__}, not bytes", layer=self._layer
             )
-            raise self._failure
+            raise fresh(self._failure)
         data = memoryview(chunk)  # nbytes, not len(): a multi-byte-item view counts items
         if data.nbytes > want:
             self._failure = InternalError(
                 "the source returned more bytes than requested", layer=self._layer
             )
-            raise self._failure
+            raise fresh(self._failure)
         return data.tobytes()

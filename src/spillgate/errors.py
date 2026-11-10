@@ -190,6 +190,20 @@ def error_for(kind: Kind, message: str = "", *, layer: int = 0, limit: int = 0) 
     return _BY_KIND[kind](message, layer=layer, limit=limit)
 
 
+def fresh(error: SpillgateError) -> SpillgateError:
+    """Return a new exception equal to ``error``, without a traceback.
+
+    Terminal errors are sticky, so readers keep them and raise them again on every later read.
+    Raising the stored object itself would attach a traceback whose frames refer back to the
+    reader (a reference cycle that keeps decoder memory alive until the cyclic garbage
+    collector runs) and would let the traceback grow with every read. Readers therefore store
+    one copy and raise a fresh one each time.
+    """
+    copy = type(error)(str(Exception.__str__(error)), layer=error.layer, limit=error.limit)
+    copy.__cause__ = error.__cause__
+    return copy
+
+
 def quote_untrusted(text: str) -> str:
     """Render attacker-controlled text for an error message (SG-R-HDR-13).
 

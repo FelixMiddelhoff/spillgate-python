@@ -8,7 +8,7 @@ from typing import Any
 
 from ._guard import MAX_STEP, LayerGuard
 from ._meter import InputMeter
-from .errors import ClosedError, RatioLimitError, SpillgateError
+from .errors import ClosedError, RatioLimitError, SpillgateError, fresh
 from .limits import EffectiveLimits
 
 _END = object()
@@ -52,7 +52,7 @@ class ChainReader(io.RawIOBase):
         try:
             data = self._top.read(len(view))
         except SpillgateError as error:
-            self._done = error
+            self._done = fresh(error)
             raise
         if not data:
             self._done = _END
@@ -94,7 +94,7 @@ class ChainReader(io.RawIOBase):
         if self._done is _END:
             return 0
         assert isinstance(self._done, SpillgateError)
-        raise self._done
+        raise fresh(self._done)
 
     def close(self) -> None:
         """Release codec state. Idempotent; the caller's source is left open (SG-R-RDR-06)."""

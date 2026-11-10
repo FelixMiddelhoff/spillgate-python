@@ -249,3 +249,52 @@ def test_bounded_errors_through_buffered_reader_are_still_typed() -> None:
     buffered = io.BufferedReader(chain)  # type: ignore[arg-type]
     with pytest.raises(SpillgateError):
         buffered.read()
+
+
+# -- sticky errors must not keep the reader alive ---------------------------------------------
+
+
+def test_a_failed_reader_is_freed_without_the_cyclic_collector() -> None:
+    """Covers: SG-I-10 SG-R-RDR-06
+
+    A stored terminal error that carries a traceback refers back to the reader's frames. The
+    readers store a traceback-free copy and raise a new one on each read, so dropping the last
+    reference frees the decoder state at once, even for a reader that was never closed.
+    """
+    import gc
+    import weakref
+
+    gc.disable()
+    try:
+        chain = reader(
+            gz(bytes(1_000_000)), "gzip", Limits(max_output=10, disable_ratio_limit=True)
+        )
+        probe = weakref.ref(chain)
+        with pytest.raises(SpillgateError):
+            while chain.read(100):
+                pass
+        for _ in range(3):
+            with pytest.raises(SpillgateError):
+                chain.read(1)
+        del chain
+        assert probe() is None
+    finally:
+        gc.enable()
+
+
+def test_repeated_reads_of_a_sticky_error_do_not_grow_the_traceback() -> None:
+    """Covers: SG-R-LAY-05"""
+    chain = reader(gz(bytes(100_000)), "gzip", Limits(max_output=10, disable_ratio_limit=True))
+    chain.read(100)
+    depths = []
+    for _ in range(50):
+        try:
+            chain.read(1)
+        except SpillgateError as error:
+            depth, tb = 0, error.__traceback__
+            while tb is not None:
+                depth, tb = depth + 1, tb.tb_next
+            depths.append(depth)
+    # The first read after the terminal condition still runs through the layers; from the
+    # second on the chain replays its stored copy. The depth never grows.
+    assert len(set(depths[1:])) == 1 and max(depths) <= 8

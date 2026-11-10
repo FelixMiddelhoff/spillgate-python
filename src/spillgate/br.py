@@ -112,6 +112,7 @@ class BrotliReader:
         self._buffer = b""
         self._pos = 0
         self._ended = False
+        self._draining = False  # decoded output may still be pending inside the library
 
     def read(self, n: int) -> bytes:
         if self._pos == len(self._buffer) and not self._refill():
@@ -140,7 +141,14 @@ class BrotliReader:
         self._decoder = self._brotli.Decompressor()
 
     def _refill(self) -> bool:
-        """Decode the next piece into the buffer. False means a clean end of the stream."""
+        """Decode the next piece into the buffer. False means a clean end of the stream.
+
+        The library keeps decoded output it has not handed out yet, even after it has taken all
+        input, and ``can_accept_more_data()`` does not say whether such output is pending. So
+        after every chunk of input the decoder is drained with empty ``process`` calls until it
+        returns nothing; only then is the next chunk fed. A stream that ends while the decoder
+        still wants input is truncated.
+        """
         if self._ended:
             return False
         if self._decoder is None:
@@ -148,14 +156,19 @@ class BrotliReader:
         decoder = self._decoder
         stalled = 0
         while not decoder.is_finished():
+            out = b""
             try:
-                if decoder.can_accept_more_data():
+                if self._draining:
+                    out = decoder.process(b"", output_buffer_limit=_STEP)
+                    self._draining = bool(out)
+                elif decoder.can_accept_more_data():
                     data = self._source.take(_FEED)
                     if not data:
                         raise CorruptError("brotli: the stream ends too early")
                     out = decoder.process(data, output_buffer_limit=_STEP)
+                    self._draining = True
                 else:
-                    out = decoder.process(b"", output_buffer_limit=_STEP)
+                    self._draining = True
             except self._brotli.error:
                 raise CorruptError("brotli: invalid data") from None
             if out:
