@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -12,14 +13,43 @@ from typing import Any
 import pytest
 
 import corpus
-from spillgate import Decoder, Kind, Limits, SpillgateError
+from spillgate import Decoder, Kind, Limits, SpillgateError, br
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = json.loads((ROOT / "conformance" / "manifest.json").read_text(encoding="utf-8"))
 VECTORS: list[dict[str, Any]] = MANIFEST["vectors"]
 
-# Codecs this package provides itself. Vectors tagged needs-<codec> run only if it is here.
-AVAILABLE_CODECS: set[str] = set()
+
+def optional_codecs() -> set[str]:
+    """The optional codecs that can be used here. Vectors tagged needs-<codec> need them."""
+    available = set()
+    try:
+        br.codec()
+        available.add("br")
+    except ImportError:
+        pass
+    return available
+
+
+AVAILABLE_CODECS = optional_codecs()
+STRICT = bool(os.environ.get("SPILLGATE_NO_SKIPS"))  # the full-codec run: a missing codec fails
+
+
+def window_bits_within(limit: int) -> int:
+    """The largest brotli window bits (10..24) whose window, 2**n - 16 bytes, fits ``limit``."""
+    bits = br.MIN_WINDOW_BITS
+    while bits < br.DEFAULT_MAX_WINDOW_BITS and 2 ** (bits + 1) - 16 <= limit:
+        bits += 1
+    return bits
+
+
+def build_codecs(vector: dict[str, Any]) -> dict[str, Any]:
+    cap = int(vector.get("options", {}).get("memory_cap", 0))
+    codecs: dict[str, Any] = {}
+    if "br" in needed_codecs(vector):
+        codecs["br"] = br.codec(window_bits_within(cap)) if cap else br.codec()
+    return codecs
+
 
 # Every vector must give the same result for these read sizes (SG-R-RDR-01).
 ALTERNATIVE_PATTERNS = [[1], [3], [4096], [-1], [1, 7, 4096, 1]]
@@ -124,7 +154,9 @@ def run_pattern(vector: dict[str, Any], stream: bytes, pattern: list[int]) -> No
     limits = None
     try:
         limits = build_limits(vector)
-        decoder = Decoder(limits, strict_zlib=bool(options.get("strict_zlib")))
+        decoder = Decoder(
+            limits, strict_zlib=bool(options.get("strict_zlib")), codecs=build_codecs(vector)
+        )
         chain = decoder.reader(source, vector["encodings"])
     except SpillgateError as error:
         construction_error = error
@@ -198,6 +230,8 @@ def vector_params() -> list[Any]:
 @pytest.mark.parametrize("vector", vector_params())
 def test_vector(vector: dict[str, Any]) -> None:
     missing = [c for c in needed_codecs(vector) if c not in AVAILABLE_CODECS]
+    if missing and STRICT:
+        pytest.fail(f"needs the optional codec {missing[0]!r}, which is not installed")
     if missing:
         pytest.skip(f"needs the optional codec {missing[0]!r}")
     stream = build_input(vector)

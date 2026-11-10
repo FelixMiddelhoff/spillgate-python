@@ -60,6 +60,12 @@ class BitWriter:
         self.out += bytes(n // 8)
         self.bits(0, n % 8)
 
+    def align(self) -> None:
+        """Pad with zero bits to the next byte boundary."""
+        if self._count:
+            self.out.append(self._acc & 0xFF)
+            self._acc = self._count = 0
+
     def finish(self) -> bytes:
         if self._count:
             self.out.append(self._acc & 0xFF)
@@ -169,31 +175,131 @@ def zeros_stream(codec: str, matches: int) -> bytes:
     raise NotImplementedError(f"zeros generator for codec {codec!r}")
 
 
-def wrap_once(codec: str, payload: bytes) -> bytes:
+def wrap_once(codec: str, payload: bytes, window: int = 0) -> bytes:
+    """Wrap ``payload`` in one stored stream. ``window`` is the brotli window bits."""
     if codec == "gzip":
         return gzip_stored(payload)
     if codec == "zlib":
         return zlib_stored(payload)
     if codec == "raw":
         return stored_deflate(payload)
+    if codec == "br":
+        return brotli_stored(payload, window)
     raise NotImplementedError(f"wrap generator for codec {codec!r}")
+
+
+# -- brotli (RFC 7932), spec/generators.md ---------------------------------------------
+
+BROTLI_METABLOCK_MAX = 1 << 24
+BROTLI_MIN_COMMAND_BYTES = 4 + 2118
+
+
+def _brotli_window_bits(w: BitWriter, wbits: int) -> None:
+    if wbits == 16:
+        w.bits(0, 1)
+    elif wbits == 17:
+        w.bits(1, 1)
+        w.bits(0, 3)
+        w.bits(0, 3)
+    elif 18 <= wbits <= 24:
+        w.bits(1, 1)
+        w.bits(wbits - 17, 3)
+    elif 10 <= wbits <= 15:
+        w.bits(1, 1)
+        w.bits(0, 3)
+        w.bits(wbits - 8, 3)
+    else:
+        raise ValueError("brotli window bits must be in 10..24")
+
+
+def _brotli_mlen(w: BitWriter, mlen: int) -> None:
+    value = mlen - 1
+    w.bits(0, 1)  # ISLAST
+    if value < 1 << 16:
+        w.bits(0, 2)
+        w.bits(value, 16)
+    elif value < 1 << 20:
+        w.bits(1, 2)
+        w.bits(value, 20)
+    else:
+        w.bits(2, 2)
+        w.bits(value, 24)
+
+
+def _brotli_end(w: BitWriter) -> None:
+    w.bits(1, 1)  # ISLAST
+    w.bits(1, 1)  # ISLASTEMPTY
+
+
+def _brotli_zeros_metablock(w: BitWriter, mlen: int) -> None:
+    _brotli_mlen(w, mlen)
+    w.bits(0, 1)  # ISUNCOMPRESSED
+    w.bits(0, 3)  # NBLTYPESL, NBLTYPESI, NBLTYPESD = 1
+    w.bits(0, 2)  # NPOSTFIX
+    w.bits(0, 4)  # NDIRECT
+    w.bits(0, 2)  # context mode of the one literal block type
+    w.bits(0, 2)  # NTREESL = 1, NTREESD = 1
+    for symbol, symbol_bits in ((0, 8), (423, 10), (0, 6)):  # three single-symbol prefix codes
+        w.bits(1, 2)  # HSKIP = 1: simple prefix code
+        w.bits(0, 2)  # NSYM - 1
+        w.bits(symbol, symbol_bits)
+    w.bits(mlen - 4 - 2118, 24)  # extra bits of copy length code 23
+
+
+def brotli_zeros(size: int, wbits: int) -> bytes:
+    """BrotliZeros: ``size`` zero bytes in a few bytes per 16 MiB meta-block."""
+    w = BitWriter()
+    _brotli_window_bits(w, wbits)
+    while size > 0:
+        chunk = min(size, BROTLI_METABLOCK_MAX)
+        remainder = size - chunk
+        if 0 < remainder < BROTLI_MIN_COMMAND_BYTES:
+            chunk -= BROTLI_MIN_COMMAND_BYTES  # leave a final meta-block that is big enough
+        _brotli_zeros_metablock(w, chunk)
+        size -= chunk
+    _brotli_end(w)
+    return w.finish()
+
+
+def brotli_stored(payload: bytes, wbits: int) -> bytes:
+    """BrotliStored: uncompressed meta-blocks around ``payload``."""
+    w = BitWriter()
+    _brotli_window_bits(w, wbits)
+    view = memoryview(payload)
+    while len(view):
+        chunk = view[:BROTLI_METABLOCK_MAX]
+        _brotli_mlen(w, len(chunk))
+        w.bits(1, 1)  # ISUNCOMPRESSED
+        w.align()
+        w.out += chunk
+        view = view[len(chunk) :]
+    _brotli_end(w)
+    return w.finish()
+
+
+def brotli_large_window_prefix() -> bytes:
+    """The reserved WBITS pattern 1000001 that announces a large-window stream."""
+    return bytes([0x11, 0x00, 0x00, 0x00])
 
 
 def generate(spec: dict[str, Any]) -> bytes:
     """Build the compressed stream a generator spec describes.
 
     Raises:
-        NotImplementedError: the spec needs the brotli or zstd generator.
+        NotImplementedError: the spec needs the zstd generator.
     """
     kind, params = spec["kind"], spec["params"]
     if kind == "zeros":
+        if params["codec"] == "br":
+            return brotli_zeros(params["size"], params["window"])
         return zeros_stream(params["codec"], params.get("matches", 0))
     if kind == "data":
-        return wrap_once(params["codec"], data(params["seed"], params["size"]))
+        payload = data(params["seed"], params["size"])
+        return wrap_once(params["codec"], payload, params.get("window", 0))
     if kind == "wrap":
         stream = generate(params["inner"])
         for _ in range(params["times"]):
-            stream = wrap_once(params["codec"], stream)
+            stream = wrap_once(params["codec"], stream, params.get("window", 0))
         return stream
     raise ValueError(f"unknown generator kind {kind!r}")
 
