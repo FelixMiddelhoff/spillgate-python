@@ -56,7 +56,7 @@ from spillgate import Decoder, Limits, br, zstd
 
 decoder = Decoder(
     Limits(max_output=8 * 2**20),
-    codecs={"br": br.codec(), "zstd": zstd.codec()},   # offer only what you installed
+    codecs={"br": br.codec(), "zstd": zstd.codec()},  # offer only what you installed
 )
 ```
 
@@ -68,6 +68,10 @@ request: up to 16 MiB for brotli and 8 MiB for zstd by default. Lower them with
 many requests at once. Older `brotli` versions are refused at import time: before 1.2.1 they
 had no output limit and a memory-corruption bug in the decoder (CVE-2026-111497).
 Always close readers (`with ... as body`) so the decoder state is released.
+
+CPU: frames and blocks that produce no output cost CPU but neither output nor ratio limit sees
+them. A zstd body made of millions of empty frames costs about one second per MB of input
+(gzip: milliseconds). Bound the compressed size with `max_input` or your server's body limit.
 
 ### Limits
 

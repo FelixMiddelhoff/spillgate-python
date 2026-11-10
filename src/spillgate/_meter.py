@@ -177,6 +177,11 @@ class InputMeter:
             self._failure = fresh(error)
             raise
         except Exception as error:
+            # Keep the source's own frames for debugging, but drop ours: a traceback that
+            # reaches back into this meter would make a reference cycle (meter -> failure ->
+            # cause -> traceback -> frame -> meter).
+            if error.__traceback__ is not None:
+                error.__traceback__ = error.__traceback__.tb_next
             self.source_error = error
             self._failure = SourceError(
                 f"the source raised {type(error).__name__}", layer=self._layer

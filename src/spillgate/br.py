@@ -24,6 +24,7 @@ the C decoder (CVE-2026-111497).
 from __future__ import annotations
 
 import importlib.metadata
+import re
 from typing import Any
 
 from ._meter import InputMeter
@@ -47,16 +48,33 @@ def _load_brotli() -> Any:
         raise ImportError(
             'brotli support needs the optional dependency: pip install "spillgate[brotli]"'
         ) from error
-    try:
-        version = tuple(int(p) for p in importlib.metadata.version("brotli").split(".")[:3])
-    except (importlib.metadata.PackageNotFoundError, ValueError):
-        version = ()
-    if version < MIN_BROTLI_VERSION or not hasattr(brotli.Decompressor, "can_accept_more_data"):
+    versions = [
+        _parse_version(getattr(brotli, "__version__", None)),
+        _parse_version(_distribution_version("brotli")),
+    ]
+    # Both the loaded module and the installed distribution must be new enough: a shadowed or
+    # stale module is not accepted because the metadata says otherwise, or the reverse.
+    if any(v < MIN_BROTLI_VERSION for v in versions) or not hasattr(
+        brotli.Decompressor, "can_accept_more_data"
+    ):
         raise ImportError(
             "spillgate needs brotli >= 1.2.1 (bounded output and the CVE-2026-111497 fix); "
             "upgrade the 'brotli' package"
         )
     return brotli
+
+
+def _distribution_version(name: str) -> str | None:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _parse_version(text: object) -> tuple[int, ...]:
+    """The leading ``major.minor.patch`` of a version string; unparseable means too old."""
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", text) if isinstance(text, str) else None
+    return tuple(int(part) for part in match.groups()) if match else (0, 0, 0)
 
 
 def window_bits(first: int) -> tuple[int, bool]:
@@ -167,6 +185,7 @@ class BrotliReader:
                         raise CorruptError("brotli: the stream ends too early")
                     out = decoder.process(data, output_buffer_limit=_STEP)
                     self._draining = True
+                    stalled = 0  # input was consumed: the stream is moving, even without output
                 else:
                     self._draining = True
             except self._brotli.error:

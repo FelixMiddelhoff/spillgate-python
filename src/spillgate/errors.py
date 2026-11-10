@@ -198,9 +198,16 @@ def fresh(error: SpillgateError) -> SpillgateError:
     reader (a reference cycle that keeps decoder memory alive until the cyclic garbage
     collector runs) and would let the traceback grow with every read. Readers therefore store
     one copy and raise a fresh one each time.
+
+    The copy keeps the class, the arguments, the attributes and the cause. Subclasses with their
+    own ``__init__`` signature are copied without calling it, so this never raises.
     """
-    copy = type(error)(str(Exception.__str__(error)), layer=error.layer, limit=error.limit)
+    cls = type(error)
+    copy = cls.__new__(cls)
+    copy.__dict__.update(error.__dict__)
+    copy.args = error.args
     copy.__cause__ = error.__cause__
+    copy.__traceback__ = None
     return copy
 
 

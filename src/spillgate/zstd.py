@@ -23,6 +23,7 @@ spillgate reads the frame structure itself and gives the library one block at a 
 from __future__ import annotations
 
 import importlib.metadata
+import re
 import struct
 from typing import Any
 
@@ -33,6 +34,7 @@ from .errors import (
     InvalidOptionError,
     MemoryLimitError,
     SpillgateError,
+    fresh,
 )
 
 __all__ = ["DEFAULT_MAX_WINDOW", "MAX_WINDOW", "MIN_WINDOW", "ZstdCodec", "codec"]
@@ -41,6 +43,7 @@ DEFAULT_MAX_WINDOW = 8 * 2**20
 MIN_WINDOW = 1 << 10
 MAX_WINDOW = 1 << 30
 MIN_ZSTANDARD_VERSION = (0, 25, 0)
+MIN_LIBZSTD_VERSION = (1, 5, 7)
 
 _FRAME_MAGIC = 0xFD2FB528
 _SKIPPABLE_MAGIC = 0x184D2A50
@@ -57,13 +60,29 @@ def _load_zstandard() -> Any:
         raise ImportError(
             'zstd support needs the optional dependency: pip install "spillgate[zstd]"'
         ) from error
-    try:
-        version = tuple(int(p) for p in importlib.metadata.version("zstandard").split(".")[:3])
-    except (importlib.metadata.PackageNotFoundError, ValueError):
-        version = ()
-    if version < MIN_ZSTANDARD_VERSION:
-        raise ImportError("spillgate needs zstandard >= 0.25.0 (libzstd 1.5.7); upgrade it")
+    versions = [
+        _parse_version(getattr(zstandard, "__version__", None)),
+        _parse_version(_distribution_version("zstandard")),
+    ]
+    library = tuple(getattr(zstandard, "ZSTD_VERSION", ()))
+    if any(v < MIN_ZSTANDARD_VERSION for v in versions) or library < MIN_LIBZSTD_VERSION:
+        raise ImportError(
+            "spillgate needs zstandard >= 0.25.0 built with libzstd >= 1.5.7; upgrade it"
+        )
     return zstandard
+
+
+def _distribution_version(name: str) -> str | None:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _parse_version(text: object) -> tuple[int, ...]:
+    """The leading ``major.minor.patch`` of a version string; unparseable means too old."""
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", text) if isinstance(text, str) else None
+    return tuple(int(part) for part in match.groups()) if match else (0, 0, 0)
 
 
 class ZstdCodec:
@@ -103,8 +122,11 @@ class ZstdReader:
         self._zstandard = zstandard
         self._max_window = max_window
         self._frames = 0
+        self._decompressor: Any = None
         self._decoder: Any = None  # the library's decompressor for the frame being decoded
         self._checksum = False
+        self._declared: int | None = None  # Frame_Content_Size, an integrity check only
+        self._produced = 0
         self._buffer = b""
         self._pos = 0
         self._deferred: SpillgateError | None = None  # a failure found after the last block
@@ -112,7 +134,7 @@ class ZstdReader:
     def read(self, n: int) -> bytes:
         while self._pos == len(self._buffer):
             if self._deferred is not None:
-                raise self._deferred
+                raise fresh(self._deferred)
             if not self._step():
                 return b""
         chunk = self._buffer[self._pos : self._pos + n]
@@ -121,6 +143,7 @@ class ZstdReader:
 
     def close(self) -> None:
         self._decoder = None
+        self._decompressor = None
         self._buffer = b""
 
     # -- frames ---------------------------------------------------------------------
@@ -158,8 +181,10 @@ class ZstdReader:
 
     def _start_frame(self, magic: int) -> None:
         header = self._read_header(magic)
-        decompressor = self._zstandard.ZstdDecompressor(max_window_size=self._max_window)
-        self._decoder = decompressor.decompressobj()
+        self._produced = 0
+        if self._decompressor is None:  # one library context for all frames of the stream
+            self._decompressor = self._zstandard.ZstdDecompressor(max_window_size=self._max_window)
+        self._decoder = self._decompressor.decompressobj()
         self._feed(header)  # produces no output; the library validates its own copy as well
 
     def _read_header(self, magic: int) -> bytes:
@@ -191,6 +216,9 @@ class ZstdReader:
             fcs_size = 1
         fcs = source.take_exact(fcs_size, "zstd frame header")
         raw += fcs
+        self._declared = None
+        if fcs:
+            self._declared = _little_endian(fcs) + (256 if len(fcs) == 2 else 0)
         if single_segment:
             window = _little_endian(fcs) + (256 if len(fcs) == 2 else 0)
 
@@ -212,9 +240,12 @@ class ZstdReader:
             raise CorruptError("zstd: reserved block type")
         if size > _MAX_BLOCK:
             raise CorruptError(f"zstd: block of {size} bytes, the maximum is {_MAX_BLOCK}")
+        if block_type == _BLOCK_COMPRESSED and size == 0:
+            raise CorruptError("zstd: an empty compressed block")  # no valid block has no content
         stored = 1 if block_type == _BLOCK_RLE else size  # an RLE block stores one byte
         body = self._source.take_exact(stored, "zstd block")
         out = self._feed(header + body)
+        self._produced += len(out)
         if last:
             # The bytes of the last block were produced before the checksum is checked, so
             # they are delivered first and a failure follows them (SG-R-LAY-07).
@@ -223,6 +254,10 @@ class ZstdReader:
                     self._feed(self._source.take_exact(4, "zstd content checksum"))
                 if not self._decoder.eof:
                     raise CorruptError("zstd: the frame is incomplete after its last block")
+                if self._declared is not None and self._declared != self._produced:
+                    # Only an integrity check (SG-R-CDC-05 SHOULD); the declared size is never
+                    # used as an allowance or to size anything (SG-R-CDC-07).
+                    raise CorruptError("zstd: the frame size differs from its declared size")
             except SpillgateError as error:
                 self._deferred = error
             self._decoder = None  # the frame is complete; look for the next one

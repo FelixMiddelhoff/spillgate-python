@@ -289,3 +289,20 @@ def test_missing_zstandard_gives_a_helpful_message(monkeypatch: pytest.MonkeyPat
     monkeypatch.setitem(sys.modules, "zstandard", None)
     with pytest.raises(ImportError, match=r"spillgate\[zstd\]"):
         zstd.codec()
+
+
+def test_empty_frames_cost_bounded_cpu_per_input_byte() -> None:
+    """Covers: SG-R-RAT-02 SG-R-MEM-02
+
+    Frames without output are invisible to the output and ratio limits; only `max_input` bounds
+    them. The cost per input byte is measured so a regression (a new DCtx per frame cost 9x
+    more) shows up.
+    """
+    frame = corpus.zstd_header(window_log=23) + corpus.zstd_raw_blocks(b"", 1024, True)
+    data = frame * 20_000  # 180 KB
+    limits = Limits(max_output=100, disable_ratio_limit=True)
+    started = time.monotonic()
+    assert decoder(limits).read_all(data, "zstd") == b""
+    assert time.monotonic() - started < 5
+    kind, _ = run(data, limits=Limits(max_output=100, max_input=len(data) // 2))
+    assert kind == "input_limit"

@@ -291,6 +291,10 @@ A stream that asks for a larger window than the cap fails with `MemoryLimitError
 byte is decoded. The window is memory per in-flight request (see `docs/memory.md`): lower the
 caps on busy servers. Always close readers so the C decoder state is released at once.
 
+Zstd has one more cost the output limits cannot see: frames and blocks that produce no output
+(empty frames, skippable frames) take about a second of CPU per MB of input. Always set
+`max_input` (or a body size limit) for endpoints that accept zstd.
+
 ### 3.9 Your own codec
 
 Register it on the decoder: `Decoder(limits, codecs={"snappy": MyCodec()})`. It runs behind the

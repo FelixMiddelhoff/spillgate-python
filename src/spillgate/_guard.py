@@ -118,11 +118,17 @@ class LayerGuard:
         except SpillgateError as error:
             failure = error.with_layer(self._layer)
             self._done = fresh(failure)
-            raise failure from failure.__cause__
+            try:
+                raise failure from failure.__cause__
+            finally:
+                del failure  # the traceback would otherwise keep this frame, and the guard, alive
         except Exception as error:
             failure = self._classify(error)
             self._done = fresh(failure)
-            raise failure from (failure.__cause__ or error)
+            try:
+                raise failure from (failure.__cause__ or error)
+            finally:
+                del failure
         return data
 
     def _as_bytes(self, data: object, n: int) -> bytes:

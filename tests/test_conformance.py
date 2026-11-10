@@ -37,7 +37,12 @@ def optional_codecs() -> set[str]:
 
 
 AVAILABLE_CODECS = optional_codecs()
-STRICT = bool(os.environ.get("SPILLGATE_NO_SKIPS"))  # the full-codec run: a missing codec fails
+STRICT = os.environ.get("SPILLGATE_NO_SKIPS", "") not in {
+    "",
+    "0",
+    "false",
+    "no",
+}  # the full-codec run: a missing codec fails
 
 
 def window_bits_within(limit: int) -> int:
