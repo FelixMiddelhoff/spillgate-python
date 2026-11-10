@@ -47,6 +47,10 @@ src = ["src", "tests", "tools"]
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 ignore = ["S101"]                      # assert is fine in tests
 
+[tool.ruff.lint.per-file-ignores]
+# The tests contain hostile strings on purpose (look-alike and non-breaking characters).
+"tests/*" = ["E501", "RUF001", "RUF002", "RUF003", "S311"]
+
 [tool.mypy]
 strict = true
 files = ["src", "tools"]

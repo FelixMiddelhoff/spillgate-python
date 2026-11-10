@@ -15,9 +15,17 @@ from an :class:`InputMeter`, which
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-from .errors import CorruptError, InputLimitError, InternalError, SourceError, SpillgateError
+from .errors import (
+    CanceledError,
+    CorruptError,
+    InputLimitError,
+    InternalError,
+    SourceError,
+    SpillgateError,
+)
 
 BUFFER_SIZE = 4096  # well below the 64 KiB look-ahead tolerance of SG-R-RAT-02
 MAX_EMPTY_READS = 100  # SG-R-RDR-03
@@ -26,8 +34,18 @@ MAX_EMPTY_READS = 100  # SG-R-RDR-03
 class InputMeter:
     """The only way a codec reads its input. Not safe for concurrent use."""
 
-    def __init__(self, source: Any, max_input: int, layer: int) -> None:
-        """``source`` has ``read(n)``; ``max_input`` 0 means no cap."""
+    def __init__(
+        self,
+        source: Any,
+        max_input: int,
+        layer: int,
+        cancel: Callable[[], bool] | None = None,
+    ) -> None:
+        """``source`` has ``read(n)``; ``max_input`` 0 means no cap.
+
+        ``cancel`` is polled before every refill (4 KiB), well within SG-R-API-04.
+        """
+        self._cancel = cancel
         self._source = source
         self._max_input = max_input
         self._layer = layer
@@ -116,6 +134,9 @@ class InputMeter:
         """Refill the empty buffer. False means a clean end of the source."""
         if self._source_eof:
             return False
+        if self._cancel is not None and self._cancel():
+            self._failure = CanceledError("canceled by the caller", layer=self._layer)
+            raise self._failure
         want = self._fetch_size()
         if want < 1:
             # Everything allowed, probe included, was fetched already.

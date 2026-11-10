@@ -7,10 +7,17 @@ raising the same terminal condition once one occurred (SG-I-03).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from ._meter import InputMeter
-from .errors import InternalError, OutputLimitError, RatioLimitError, SpillgateError
+from .errors import (
+    CanceledError,
+    InternalError,
+    OutputLimitError,
+    RatioLimitError,
+    SpillgateError,
+)
 from .limits import EffectiveLimits
 
 # The most a guard asks a codec for in one call. It bounds the memory of one step
@@ -24,8 +31,16 @@ _END = object()  # sticky "clean end" marker, as opposed to an error
 class LayerGuard:
     """Wraps the output of one decoding layer. Not safe for concurrent use."""
 
-    def __init__(self, codec: Any, meter: InputMeter, layer: int, limits: EffectiveLimits) -> None:
+    def __init__(
+        self,
+        codec: Any,
+        meter: InputMeter,
+        layer: int,
+        limits: EffectiveLimits,
+        cancel: Callable[[], bool] | None = None,
+    ) -> None:
         self._codec = codec  # has read(n) -> bytes
+        self._cancel = cancel
         self._meter = meter
         self._layer = layer
         self._limits = limits
@@ -48,6 +63,9 @@ class LayerGuard:
             return self._replay()
         if n <= 0:
             return b""  # SG-R-RDR-02: a zero-length read changes nothing
+        if self._cancel is not None and self._cancel():
+            self._done = CanceledError("canceled by the caller", layer=self._layer)
+            return self._replay()
         remaining = self._limits.max_output - self._produced
         if remaining == 0:
             return self._probe()
@@ -99,11 +117,11 @@ class LayerGuard:
         except SpillgateError as error:
             failure = error.with_layer(self._layer)
             self._done = failure
-            raise failure from None
+            raise failure from failure.__cause__
         except Exception as error:
             failure = self._classify(error)
             self._done = failure
-            raise failure from error
+            raise failure from (failure.__cause__ or error)
         return bytes(data)
 
     def _check_contract(self, data: object, n: int) -> None:

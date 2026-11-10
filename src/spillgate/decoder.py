@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 
@@ -68,7 +68,13 @@ class Decoder:
             table[name] = codec
         self._codecs: Mapping[str, Codec] = MappingProxyType(table)
 
-    def reader(self, source: Any, encodings: str | Sequence[str] = ()) -> ChainReader:
+    def reader(
+        self,
+        source: Any,
+        encodings: str | Sequence[str] = (),
+        *,
+        cancel: Callable[[], bool] | None = None,
+    ) -> ChainReader:
         """Return a reader of the decoded bytes of ``source``.
 
         Args:
@@ -76,6 +82,10 @@ class Decoder:
                 ``io.BytesIO``). It is not closed by spillgate.
             encodings: the ``Content-Encoding`` field values as received; one string,
                 or a sequence of strings for repeated header lines.
+            cancel: optional; called before every read and before every 4 KiB taken
+                from the source. If it returns true the reader fails with
+                :class:`~spillgate.CanceledError`, sticky (SG-R-API-04). It cannot
+                interrupt one step inside a codec; the limits bound the work there.
 
         Every check that depends only on the header happens here, before the
         source is touched (SG-R-HDR-09, SG-R-API-03).
@@ -91,18 +101,26 @@ class Decoder:
         layers = parse_content_encoding(
             encodings, lambda name: name in self._codecs, self._limits.max_layers
         )
-        return self._build_chain(source, layers)
+        return self._build_chain(source, layers, cancel)
 
-    def read_all(self, source: Any, encodings: str | Sequence[str] = ()) -> bytes:
+    def read_all(
+        self,
+        source: Any,
+        encodings: str | Sequence[str] = (),
+        *,
+        cancel: Callable[[], bool] | None = None,
+    ) -> bytes:
         """Decode ``source`` completely: the whole body, or an error and no data.
 
         Memory grows with the bytes actually produced, never from declared sizes or
         from ``max_output`` (SG-R-API-02, SG-R-MEM-02).
         """
-        with self.reader(source, encodings) as chain:
+        with self.reader(source, encodings, cancel=cancel) as chain:
             return chain.readall()
 
-    def _build_chain(self, source: Any, layers: list[str]) -> ChainReader:
+    def _build_chain(
+        self, source: Any, layers: list[str], cancel: Callable[[], bool] | None
+    ) -> ChainReader:
         current: Any = source
         first_meter: InputMeter | None = None
         guard: LayerGuard | None = None
@@ -111,13 +129,13 @@ class Decoder:
             for index in range(1, max(len(layers), 1) + 1):
                 # The input cap applies to the chain's source only.
                 cap = self._limits.max_input if index == 1 else 0
-                meter = InputMeter(current, cap, index)
+                meter = InputMeter(current, cap, index, cancel)
                 first_meter = first_meter or meter
                 codec_reader: Any = _Passthrough(meter)  # identity: bytes pass through the guard
                 if layers:
                     codec_reader = self._new_codec_reader(layers[index - 1], meter, index)
                     codec_readers.append(codec_reader)
-                guard = LayerGuard(codec_reader, meter, index, self._limits)
+                guard = LayerGuard(codec_reader, meter, index, self._limits, cancel)
                 current = guard
         except BaseException:
             ChainReader(guard, first_meter, self._limits, codec_readers).close()  # type: ignore[arg-type]
