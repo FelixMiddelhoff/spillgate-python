@@ -47,10 +47,26 @@ def test_no_unbounded_stdlib_decompression_api_is_used() -> None:
     for name, func, node in calls_in_source():
         assert func not in banned, f"{name}: {func}"
         assert not func.endswith(".flush"), f"{name}: unbounded flush() in {func}"
+        if name == "zstd.py" and func.endswith(".decompress"):
+            continue  # fed one block at a time; see test_zstd_feeds_one_bounded_block_at_a_time
         if func.endswith(".decompress") and func != "zlib.decompress":
             assert len(node.args) + len(node.keywords) >= 2, (
                 f"{name}: decompress() without max_length ({ast.unparse(node)})"
             )
+
+
+def test_zstd_feeds_one_bounded_block_at_a_time() -> None:
+    """Covers: SG-I-04 SG-R-LAY-02
+
+    `zstandard`'s streaming decompressor has no `max_length`. The codec bounds the output by
+    construction instead: it never gives the library more than one block (at most 128 KiB,
+    which decodes to at most 128 KiB) and checks the size of what comes back.
+    """
+    source = (SRC / "zstd.py").read_text(encoding="utf-8")
+    assert "_MAX_BLOCK = 128 * 1024" in source
+    assert "if size > _MAX_BLOCK" in source  # a larger block is refused before it is fed
+    assert "len(out) > _MAX_BLOCK" in source  # and the result is checked
+    assert source.count(".decompress(") == 1  # one call site, in _feed
 
 
 def test_max_length_is_never_zero_at_runtime(monkeypatch: pytest.MonkeyPatch) -> None:

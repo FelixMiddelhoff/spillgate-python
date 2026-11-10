@@ -16,5 +16,14 @@ output. The tests (`tests/test_python_traps.py`) measure the peak with `tracemal
 decoding a 200 MB bomb against a 100 MB limit peaks below 4 MiB, and reading one byte at
 a time costs constant memory.
 
-The optional brotli and zstd codecs add their decoder window, which is bounded by the
-window cap of the codec, not by `max_output`.
+The optional codecs add their decoder window, which is bounded by the window cap of the codec,
+not by `max_output`:
+
+| Codec | Step | Window (default cap) | Measured peak, 1 GiB bomb at the largest window (Windows, CPython 3.13) |
+| --- | --- | --- | --- |
+| brotli | about 32 KiB output per library call | 2**24 - 16 bytes (16 MiB) | about +18 MiB over the idle process |
+| zstd | one block, at most 128 KiB in and 128 KiB out | 8 MiB | about +11 MiB over the idle process |
+
+The C libraries allocate their windows outside Python, so `tracemalloc` does not see them;
+the figures above are the peak working set of a process that decoded the bomb five times and
+closed each reader. Lower the caps for servers that decode many requests at once.

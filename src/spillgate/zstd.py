@@ -27,7 +27,13 @@ import struct
 from typing import Any
 
 from ._meter import InputMeter
-from .errors import CorruptError, InternalError, InvalidOptionError, MemoryLimitError
+from .errors import (
+    CorruptError,
+    InternalError,
+    InvalidOptionError,
+    MemoryLimitError,
+    SpillgateError,
+)
 
 __all__ = ["DEFAULT_MAX_WINDOW", "MAX_WINDOW", "MIN_WINDOW", "ZstdCodec", "codec"]
 
@@ -101,9 +107,12 @@ class ZstdReader:
         self._checksum = False
         self._buffer = b""
         self._pos = 0
+        self._deferred: SpillgateError | None = None  # a failure found after the last block
 
     def read(self, n: int) -> bytes:
         while self._pos == len(self._buffer):
+            if self._deferred is not None:
+                raise self._deferred
             if not self._step():
                 return b""
         chunk = self._buffer[self._pos : self._pos + n]
@@ -207,10 +216,15 @@ class ZstdReader:
         body = self._source.take_exact(stored, "zstd block")
         out = self._feed(header + body)
         if last:
-            if self._checksum:
-                out += self._feed(self._source.take_exact(4, "zstd content checksum"))
-            if not self._decoder.eof:
-                raise CorruptError("zstd: the frame is incomplete after its last block")
+            # The bytes of the last block were produced before the checksum is checked, so
+            # they are delivered first and a failure follows them (SG-R-LAY-07).
+            try:
+                if self._checksum:
+                    self._feed(self._source.take_exact(4, "zstd content checksum"))
+                if not self._decoder.eof:
+                    raise CorruptError("zstd: the frame is incomplete after its last block")
+            except SpillgateError as error:
+                self._deferred = error
             self._decoder = None  # the frame is complete; look for the next one
             self._frames += 1
         self._buffer, self._pos = out, 0

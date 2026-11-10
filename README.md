@@ -12,8 +12,8 @@ except OutputLimitError:
     ...  # refuse the response
 ```
 
-- `Content-Encoding` chains: `gzip` (and `x-gzip`), `deflate`, `identity`. Brotli and zstd are
-  optional codecs.
+- `Content-Encoding` chains: `gzip` (and `x-gzip`), `deflate`, `identity`; `br` and `zstd` as
+  optional extras (see below).
 - `max_output` is required. There is no unlimited setting.
 - Every layer is limited, including the intermediate layers of a chain.
 - Expansion ratio and chain length are limited by default.
@@ -43,6 +43,31 @@ with decoder.reader(resp.raw, resp.headers.get_all("Content-Encoding", [])) as b
 `SpillgateError` as failure of the whole body.
 
 `source` is `bytes` or any object with `read(n)`. It is not closed by spillgate.
+
+### Brotli and zstd
+
+```
+pip install "spillgate[brotli]"   # brotli >= 1.2.1
+pip install "spillgate[zstd]"     # zstandard >= 0.25.0
+```
+
+```python
+from spillgate import Decoder, Limits, br, zstd
+
+decoder = Decoder(
+    Limits(max_output=8 * 2**20),
+    codecs={"br": br.codec(), "zstd": zstd.codec()},   # offer only what you installed
+)
+```
+
+Both decoders are C libraries and are treated as untrusted: spillgate reads the window size
+(brotli) or the whole frame structure (zstd) itself, refuses oversized windows as `memory_limit`
+before anything is decoded, and gives the library bounded steps. The window costs memory per
+request: up to 16 MiB for brotli and 8 MiB for zstd by default. Lower them with
+`br.codec(max_window_bits=22)` and `zstd.codec(max_window_bytes=2**21)` when a server decodes
+many requests at once. Older `brotli` versions are refused at import time: before 1.2.1 they
+had no output limit and a memory-corruption bug in the decoder (CVE-2026-111497).
+Always close readers (`with ... as body`) so the decoder state is released.
 
 ### Limits
 

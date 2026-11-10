@@ -272,7 +272,26 @@ input; when it returns true the reader raises `CanceledError`, sticky. It cannot
 one step inside the decoder (the limits bound that), and it does not interrupt a blocking
 `read` of your source; use socket timeouts for that.
 
-### 3.8 Your own codec
+### 3.8 Brotli and zstd
+
+Install the extras and register the codecs; offer in `Accept-Encoding` only what you
+registered:
+
+```python
+from spillgate import Decoder, Limits, br, zstd
+
+DECODER = Decoder(
+    Limits(max_output=8 * 2**20),
+    codecs={"br": br.codec(max_window_bits=22), "zstd": zstd.codec(max_window_bytes=2**22)},
+)
+HEADERS = {"Accept-Encoding": "gzip, deflate, br, zstd"}
+```
+
+A stream that asks for a larger window than the cap fails with `MemoryLimitError` before a
+byte is decoded. The window is memory per in-flight request (see `docs/memory.md`): lower the
+caps on busy servers. Always close readers so the C decoder state is released at once.
+
+### 3.9 Your own codec
 
 Register it on the decoder: `Decoder(limits, codecs={"snappy": MyCodec()})`. It runs behind the
 same limiter, so even a careless codec cannot exceed `max_output`. See `spillgate.Codec` for
@@ -410,7 +429,7 @@ For each, replace the decoder with spillgate or make sure it never sees unbounde
 
 - [ ] One shared `Decoder`, created at start-up, limits chosen per data path from real sizes.
 - [ ] Every ingress (HTTP client, web endpoint, queue consumer, file or object reader) goes through spillgate; no other decoder runs before it.
-- [ ] HTTP libraries are told not to decode (`decode_content=False`, `iter_raw`, `auto_decompress=False`), and `Accept-Encoding` is set explicitly.
+- [ ] HTTP libraries are told not to decode (`decode_content=False`, `iter_raw`, `auto_decompress=False`), and `Accept-Encoding` is set explicitly (no `br`/`zstd` unless you registered them).
 - [ ] The compressed size is bounded separately (server body limit, `max_input`).
 - [ ] Streaming consumers discard or roll back partial data on any exception.
 - [ ] Limit errors map to 413, unsupported encodings to 415, malformed or corrupt data to 400.
