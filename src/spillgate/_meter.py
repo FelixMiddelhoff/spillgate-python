@@ -18,8 +18,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from ._cancel import poll
 from .errors import (
-    CanceledError,
     CorruptError,
     InputLimitError,
     InternalError,
@@ -134,9 +134,10 @@ class InputMeter:
         """Refill the empty buffer. False means a clean end of the source."""
         if self._source_eof:
             return False
-        if self._cancel is not None and self._cancel():
-            self._failure = CanceledError("canceled by the caller", layer=self._layer)
-            raise self._failure
+        stop = poll(self._cancel, self._layer)
+        if stop is not None:
+            self._failure = stop
+            raise stop
         want = self._fetch_size()
         if want < 1:
             # Everything allowed, probe included, was fetched already.
@@ -188,9 +189,10 @@ class InputMeter:
                 f"the source returned {type(chunk).__name__}, not bytes", layer=self._layer
             )
             raise self._failure
-        if len(chunk) > want:
+        data = memoryview(chunk)  # nbytes, not len(): a multi-byte-item view counts items
+        if data.nbytes > want:
             self._failure = InternalError(
                 "the source returned more bytes than requested", layer=self._layer
             )
             raise self._failure
-        return bytes(chunk)
+        return data.tobytes()

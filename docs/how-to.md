@@ -29,11 +29,11 @@ of them add brotli and zstd to `Accept-Encoding` as soon as those packages are i
 from spillgate import Limits
 
 limits = Limits(
-    max_output=8 * 2**20,   # required: bytes each layer may produce
-    max_layers=3,           # default 5, range 1..16
-    max_ratio=1000,         # default 1000
+    max_output=8 * 2**20,  # required: bytes each layer may produce
+    max_layers=3,  # default 5, range 1..16
+    max_ratio=1000,  # default 1000
     ratio_grace=64 * 1024,  # default 64 KiB
-    max_input=2 * 2**20,    # optional: compressed bytes taken from the source
+    max_input=2 * 2**20,  # optional: compressed bytes taken from the source
 )
 ```
 
@@ -136,7 +136,7 @@ def fetch(url):
         resp.raise_for_status()
         encodings = resp.raw.headers.getlist("Content-Encoding")
         with DECODER.reader(RawBody(resp), encodings) as body:
-            return body.readall()          # SpillgateError on any refusal
+            return body.readall()  # SpillgateError on any refusal
 ```
 
 Never call `resp.content`, `resp.text` or `resp.json()` on a response whose body has not gone
@@ -216,8 +216,12 @@ from spillgate import SpillgateError
 app = Flask(__name__)
 
 STATUS = {
-    "output_limit": 413, "ratio_limit": 413, "layer_limit": 413, "input_limit": 413,
-    "memory_limit": 413, "unsupported_encoding": 415,
+    "output_limit": 413,
+    "ratio_limit": 413,
+    "layer_limit": 413,
+    "input_limit": 413,
+    "memory_limit": 413,
+    "unsupported_encoding": 415,
 }
 
 
@@ -243,7 +247,7 @@ with open(path, "rb") as f, DECODER.reader(f, "gzip") as body:
     with open(tmp_path, "wb") as out:
         for chunk in iter(lambda: body.read(65536), b""):
             out.write(chunk)
-os.replace(tmp_path, final_path)            # only reached if no exception came
+os.replace(tmp_path, final_path)  # only reached if no exception came
 ```
 
 For content stored with a known encoding pass it yourself (`"gzip"`). Pass `""` or `()` for
@@ -291,10 +295,10 @@ def log_refusal(error: SpillgateError) -> None:
     if error.kind in (Kind.INTERNAL, Kind.MEMORY_LIMIT):
         log.error("decoder problem: %s", error.kind.value, extra={"layer": error.layer})
     elif error.kind in (Kind.SOURCE_ERROR, Kind.CANCELED):
-        log.debug("decode interrupted: %s", error.kind.value)   # not an attack signal
+        log.debug("decode interrupted: %s", error.kind.value)  # not an attack signal
     else:
         log.warning("refused: %s layer=%s limit=%s", error.kind.value, error.layer, error.limit)
-    REFUSALS.labels(kind=error.kind.value).inc()               # your metrics
+    REFUSALS.labels(kind=error.kind.value).inc()  # your metrics
 ```
 
 ### What each outcome means and what to do
@@ -344,12 +348,13 @@ amount that fixes it and write down why. Do not switch limits off to make an ale
    ```python
    import gzip
 
+
    def gzip_bomb(size: int) -> bytes:
        return gzip.compress(bytes(size), compresslevel=9)
 
+
    def test_endpoint_refuses_bombs(client):
-       resp = client.post("/ingest", data=gzip_bomb(50_000_000),
-                          headers={"Content-Encoding": "gzip"})
+       resp = client.post("/ingest", data=gzip_bomb(50_000_000), headers={"Content-Encoding": "gzip"})
        assert resp.status_code == 413
    ```
 

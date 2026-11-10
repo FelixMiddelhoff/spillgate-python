@@ -32,9 +32,13 @@ def _integer(name: str, value: object, low: int, high: int) -> int:
     """
     if isinstance(value, bool) or not isinstance(value, int):
         raise InvalidLimitsError(f"{name} must be an integer, got {type(value).__name__}")
-    if not low <= value <= high:
-        raise InvalidLimitsError(f"{name} must be in {low}..{high}, got {value}")
-    return value
+    # ``int.__add__`` reads the underlying value of an ``int`` subclass without calling any
+    # method the subclass may have overridden (comparisons, __index__, ...); the result is
+    # a plain ``int`` that the range check below cannot be fooled about.
+    plain = int.__add__(value, 0)
+    if not low <= plain <= high:
+        raise InvalidLimitsError(f"{name} must be in {low}..{high}, got {plain}")
+    return plain
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -73,17 +77,20 @@ class Limits:
             raise InvalidLimitsError(
                 "max_output is required (it has no default and no unlimited value)"
             )
-        _integer("max_output", self.max_output, 1, _MAX_INT64)
-        if self.max_layers is not None:
-            _integer("max_layers", self.max_layers, 1, HARD_MAX_LAYERS)
-        if self.max_ratio is not None:
-            _integer("max_ratio", self.max_ratio, 1, HARD_MAX_RATIO)
-        if self.ratio_grace is not None:
-            _integer("ratio_grace", self.ratio_grace, 0, _MAX_INT64)
-        if self.max_input is not None:
-            _integer("max_input", self.max_input, 1, _MAX_INT64)
         if not isinstance(self.disable_ratio_limit, bool):
             raise InvalidLimitsError("disable_ratio_limit must be a bool")
+        ranges = {
+            "max_output": (1, _MAX_INT64),
+            "max_layers": (1, HARD_MAX_LAYERS),
+            "max_ratio": (1, HARD_MAX_RATIO),
+            "ratio_grace": (0, _MAX_INT64),
+            "max_input": (1, _MAX_INT64),
+        }
+        for name, (low, high) in ranges.items():
+            value = getattr(self, name)
+            if value is not None:
+                # Store the plain int, so later code never meets an int subclass.
+                object.__setattr__(self, name, _integer(name, value, low, high))
         if self.disable_ratio_limit and self.max_ratio is not None:
             raise InvalidLimitsError("max_ratio contradicts disable_ratio_limit; set only one")
 
@@ -100,6 +107,17 @@ class EffectiveLimits:
 
     @classmethod
     def of(cls, limits: Limits) -> EffectiveLimits:
+        # Validate again from the raw field values: a ``Limits`` that was changed with
+        # ``object.__setattr__``, built by pickle or by a subclass that skips
+        # ``__post_init__`` must not reach the decoder unchecked (SG-R-LIM-08, LIM-09).
+        limits = Limits(
+            max_output=limits.max_output,
+            max_layers=limits.max_layers,
+            max_ratio=limits.max_ratio,
+            ratio_grace=limits.ratio_grace,
+            max_input=limits.max_input,
+            disable_ratio_limit=limits.disable_ratio_limit,
+        )
         if limits.disable_ratio_limit:
             ratio = 0
         else:

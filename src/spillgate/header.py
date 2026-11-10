@@ -63,12 +63,14 @@ def parse_content_encoding(
 
 def _as_fields(values: str | Sequence[str]) -> list[str]:
     if isinstance(values, str):
-        return [values]
+        return [str.__add__(values, "")]
     fields = list(values)
     for value in fields:
         if not isinstance(value, str):
             raise TypeError(f"Content-Encoding values must be str, got {type(value).__name__}")
-    return fields
+    # ``str.__add__`` yields the plain ``str`` of a subclass instance without calling methods
+    # the subclass may have overridden (encode, __len__, strip, ...).
+    return [str.__add__(value, "") for value in fields]
 
 
 def _check_length(fields: list[str]) -> None:

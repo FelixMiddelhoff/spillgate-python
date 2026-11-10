@@ -10,9 +10,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from ._cancel import poll
 from ._meter import InputMeter
 from .errors import (
-    CanceledError,
     InternalError,
     OutputLimitError,
     RatioLimitError,
@@ -63,11 +63,12 @@ class LayerGuard:
             return self._replay()
         if n <= 0:
             return b""  # SG-R-RDR-02: a zero-length read changes nothing
-        if self._cancel is not None and self._cancel():
-            self._done = CanceledError("canceled by the caller", layer=self._layer)
+        stop = poll(self._cancel, self._layer)
+        if stop is not None:
+            self._done = stop
             return self._replay()
         remaining = self._limits.max_output - self._produced
-        if remaining == 0:
+        if remaining <= 0:
             return self._probe()
         data = self._call_codec(min(n, remaining, MAX_STEP))
         if not data:
@@ -112,8 +113,7 @@ class LayerGuard:
     def _call_codec(self, n: int) -> bytes:
         """One codec read, with its failures contained (SG-R-CDC-08)."""
         try:
-            data = self._codec.read(n)
-            self._check_contract(data, n)
+            data = self._as_bytes(self._codec.read(n), n)
         except SpillgateError as error:
             failure = error.with_layer(self._layer)
             self._done = failure
@@ -122,15 +122,22 @@ class LayerGuard:
             failure = self._classify(error)
             self._done = failure
             raise failure from (failure.__cause__ or error)
-        return bytes(data)
+        return data
 
-    def _check_contract(self, data: object, n: int) -> None:
+    def _as_bytes(self, data: object, n: int) -> bytes:
+        """Check the codec's return value once, by its size in *bytes* (SG-R-CDC-08).
+
+        ``len()`` of a ``memoryview`` counts items, not bytes, so the size is taken from
+        ``nbytes`` of a byte view; the delivered value is a plain ``bytes`` copy.
+        """
         if not isinstance(data, bytes | bytearray | memoryview):
             raise InternalError(
                 f"codec returned {type(data).__name__}, not bytes", layer=self._layer
             )
-        if len(data) > n:
+        view = memoryview(data)
+        if view.nbytes > n:
             raise InternalError("codec returned more bytes than requested", layer=self._layer)
+        return view.tobytes()
 
     def _classify(self, error: Exception) -> SpillgateError:
         """An unexpected exception is a codec bug, unless the source caused it."""
