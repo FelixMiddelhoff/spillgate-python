@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import corpus
-from spillgate import Decoder, Kind, Limits, SpillgateError, br
+from spillgate import Decoder, Kind, Limits, SpillgateError, br, zstd
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = json.loads((ROOT / "conformance" / "manifest.json").read_text(encoding="utf-8"))
@@ -26,6 +26,11 @@ def optional_codecs() -> set[str]:
     try:
         br.codec()
         available.add("br")
+    except ImportError:
+        pass
+    try:
+        zstd.codec()
+        available.add("zstd")
     except ImportError:
         pass
     return available
@@ -48,6 +53,8 @@ def build_codecs(vector: dict[str, Any]) -> dict[str, Any]:
     codecs: dict[str, Any] = {}
     if "br" in needed_codecs(vector):
         codecs["br"] = br.codec(window_bits_within(cap)) if cap else br.codec()
+    if "zstd" in needed_codecs(vector):
+        codecs["zstd"] = zstd.codec(cap) if cap else zstd.codec()
     return codecs
 
 

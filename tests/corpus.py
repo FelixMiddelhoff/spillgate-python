@@ -185,6 +185,8 @@ def wrap_once(codec: str, payload: bytes, window: int = 0) -> bytes:
         return stored_deflate(payload)
     if codec == "br":
         return brotli_stored(payload, window)
+    if codec == "zstd":
+        return zstd_stored(payload, window)
     raise NotImplementedError(f"wrap generator for codec {codec!r}")
 
 
@@ -282,16 +284,105 @@ def brotli_large_window_prefix() -> bytes:
     return bytes([0x11, 0x00, 0x00, 0x00])
 
 
+# -- zstd (RFC 8878), spec/generators.md -----------------------------------------------
+
+ZSTD_BLOCK_MAX = 128 * 1024
+ZSTD_MAGIC = 0xFD2FB528
+
+
+def zstd_header(
+    *,
+    single_segment: bool = False,
+    window_log: int = 0,
+    mantissa: int = 0,
+    reserved_bit: bool = False,
+    content_size: int | None = None,
+    dictionary_id: int | None = None,
+    checksum: bool = False,
+) -> bytes:
+    """ZstdHeader.Bytes: magic, descriptor, window descriptor, dictionary id, content size."""
+    out = struct.pack("<I", ZSTD_MAGIC)
+    fcs_flag, fcs_field = 0, b""
+    if content_size is not None:
+        if single_segment and content_size <= 255:
+            fcs_flag, fcs_field = 0, bytes([content_size])
+        elif 256 <= content_size <= 65791:
+            fcs_flag, fcs_field = 1, struct.pack("<H", content_size - 256)
+        elif content_size <= 2**32 - 1:
+            fcs_flag, fcs_field = 2, struct.pack("<I", content_size)
+        else:
+            fcs_flag, fcs_field = 3, struct.pack("<Q", content_size)
+    dict_flag, dict_field = 0, b""
+    if dictionary_id is not None:
+        dict_flag, dict_field = 3, struct.pack("<I", dictionary_id)
+    descriptor = fcs_flag << 6 | dict_flag
+    descriptor |= (1 << 5 if single_segment else 0) | (1 << 2 if checksum else 0)
+    descriptor |= 1 << 3 if reserved_bit else 0
+    out += bytes([descriptor])
+    if not single_segment:
+        out += bytes([((window_log - 10) << 3 | mantissa & 7) & 0xFF])
+    return out + dict_field + fcs_field
+
+
+def _zstd_block_max(window_log: int) -> int:
+    return ZSTD_BLOCK_MAX if window_log >= 17 else 1 << window_log
+
+
+def _zstd_block_header(last: bool, block_type: int, size: int) -> bytes:
+    value = size << 3 | block_type << 1 | (1 if last else 0)
+    return bytes([value & 0xFF, value >> 8 & 0xFF, value >> 16 & 0xFF])
+
+
+def zstd_rle_blocks(size: int, block_max: int, value: int, last: bool) -> bytes:
+    """RLE blocks of up to ``block_max`` bytes: 4 bytes per block, 32768:1 at 128 KiB."""
+    out = bytearray()
+    while True:
+        chunk = min(size, block_max)
+        size -= chunk
+        out += _zstd_block_header(last and size == 0, 1, chunk) + bytes([value])
+        if size == 0:
+            return bytes(out)
+
+
+def zstd_raw_blocks(payload: bytes, block_max: int, last: bool) -> bytes:
+    out = bytearray()
+    view = memoryview(payload)
+    while True:
+        chunk = view[:block_max]
+        view = view[len(chunk) :]
+        out += _zstd_block_header(last and len(view) == 0, 0, len(chunk)) + chunk
+        if len(view) == 0:
+            return bytes(out)
+
+
+def zstd_zeros(size: int, window_log: int) -> bytes:
+    return zstd_header(window_log=window_log) + zstd_rle_blocks(
+        size, _zstd_block_max(window_log), 0, True
+    )
+
+
+def zstd_stored(payload: bytes, window_log: int) -> bytes:
+    return zstd_header(window_log=window_log) + zstd_raw_blocks(
+        payload, _zstd_block_max(window_log), True
+    )
+
+
+def zstd_skippable(n: int) -> bytes:
+    return struct.pack("<II", 0x184D2A50, n) + bytes(n)
+
+
 def generate(spec: dict[str, Any]) -> bytes:
     """Build the compressed stream a generator spec describes.
 
     Raises:
-        NotImplementedError: the spec needs the zstd generator.
+        ValueError: the spec names an unknown generator kind.
     """
     kind, params = spec["kind"], spec["params"]
     if kind == "zeros":
         if params["codec"] == "br":
             return brotli_zeros(params["size"], params["window"])
+        if params["codec"] == "zstd":
+            return zstd_zeros(params["size"], params["window"])
         return zeros_stream(params["codec"], params.get("matches", 0))
     if kind == "data":
         payload = data(params["seed"], params["size"])
