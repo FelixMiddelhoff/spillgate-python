@@ -24,7 +24,7 @@ This is the Python implementation of the language-neutral
 [spillgate specification](https://github.com/FelixMiddelhoff/spillgate/blob/main/spec/SPEC.md).
 It passes the same conformance corpus as the Go reference implementation.
 
-Python 3.11 or newer.
+Python 3.11 or newer. **Integrating it into your service: [docs/how-to.md](docs/how-to.md).**
 
 ## Use
 
