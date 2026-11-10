@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spillgate"
+version = "0.1.0.dev0"
+description = "Decode untrusted compressed data with mandatory limits (decompression-bomb gate)."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Felix Middelhoff" }]
+requires-python = ">=3.11"
+dependencies = []                      # the core needs nothing but the standard library
+keywords = ["gzip", "deflate", "brotli", "zstd", "decompression-bomb", "security", "content-encoding"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security",
+    "Topic :: System :: Archiving :: Compression",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6", "mypy>=1.11"]
+
+[project.urls]
+Homepage = "https://github.com/FelixMiddelhoff/spillgate-python"
+Specification = "https://github.com/FelixMiddelhoff/spillgate/blob/main/spec/SPEC.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/spillgate"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-ra --strict-markers"
+markers = ["large: conformance vectors that decode very large generated inputs"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+ignore = ["S101"]                      # assert is fine in tests
+
+[tool.mypy]
+strict = true
+files = ["src", "tools"]
