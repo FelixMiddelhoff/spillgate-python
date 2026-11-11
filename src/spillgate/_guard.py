@@ -24,7 +24,7 @@ from .limits import EffectiveLimits
 # The most a guard asks a codec for in one call. It bounds the memory of one step
 # (SG-R-MEM-02) whatever size of buffer the caller reads with; callers get short
 # reads, which every reader contract allows.
-MAX_STEP = 256 * 1024
+MAX_STEP = 64 * 1024
 
 _END = object()  # sticky "clean end" marker, as opposed to an error
 

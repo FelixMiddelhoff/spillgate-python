@@ -6,7 +6,7 @@ fields, lengths in the stream). What it does allocate is bounded by constants:
 | Part | Bound |
 | --- | --- |
 | Input meter buffer, per layer | 4 KiB |
-| One decode step, per layer | 256 KiB (`MAX_STEP`), whatever buffer size the caller reads with |
+| One decode step, per layer | 64 KiB (`MAX_STEP`), whatever buffer size the caller reads with |
 | zlib decoder state (gzip, deflate), per layer | about 40 KiB (32 KiB window plus tables) |
 | gzip header fields | read in pieces of at most 512 bytes; FNAME and FCOMMENT are refused above 512 bytes |
 | Whole-body functions (`decode_all`, `read_all`) | grow with the bytes actually produced; never preallocated from `max_output` |

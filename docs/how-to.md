@@ -262,7 +262,7 @@ plain data that should still be bounded.
   them (wrote to a file, fed a parser, stored in a database) must be undone when an exception
   comes. Write to a temporary file and move it on success; never commit a partial body.
 
-A single `read(n)` returns at most 256 KiB whatever `n` is, so a huge buffer size does not
+A single `read(n)` returns at most 64 KiB whatever `n` is, so a huge buffer size does not
 allocate a huge buffer. Loop until `b""`.
 
 ### 3.7 Cancellation
