@@ -79,7 +79,7 @@ Inputs described by a generator are built by the construction in `spec/generator
 
 For each vector: build the input, construct the decoder with `limits`, `encodings`, `options`; if `phase` is `construct`, require the construction error with the right class and zero bytes read from the source; otherwise read with `read_pattern` until a terminal condition; compare outcome class, delivered length bounds and SHA-256. The runner MUST also check: sticky behavior (two more reads after the terminal condition return the same class), and that no more than `max_input` (if set) bytes were taken from the source.
 
-Each vector is additionally run with a fixed set of alternative read patterns (`[1]`, `[3]`, `[4096]`, `[-1]`, `[1,7,4096,1]`) and MUST give identical results (SG-R-RDR-01: the same outcome class and the same decoded prefix; for `ratio_limit` the length of the delivered prefix may differ by at most 64 KiB, which is why those vectors state `delivered_at_most`), unless the vector pins a pattern for a reason stated in `description`.
+Each vector is additionally run with a fixed set of alternative read patterns (`[1]`, `[3]`, `[4096]`, `[-1]`, `[1,7,4096,1]`) and MUST give identical results (SG-R-RDR-01: the same outcome class and the same decoded prefix; for `ratio_limit` the length of the delivered prefix may differ, which is why those vectors state `delivered_at_most`), unless the vector pins a pattern for a reason stated in `description`.
 
 ## Tiers
 
