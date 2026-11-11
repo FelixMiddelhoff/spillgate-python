@@ -78,7 +78,9 @@ class GzipReader:
             probe = self._source.take(1)
             if not probe:
                 return False
-            self._source.unread(probe)
+            self._source.unread(probe)  # only looked at, not taken (SG-R-INP-01)
+            if probe[0] != _ID1:
+                raise CorruptError("gzip: invalid header")  # trailing data
         fixed = self._source.take_exact(_FIXED_HEADER, "gzip header")
         if fixed[0] != _ID1 or fixed[1] != _ID2 or fixed[2] != _CM_DEFLATE:
             raise CorruptError("gzip: invalid header")

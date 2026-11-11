@@ -69,11 +69,19 @@ class InputMeter:
         failure = self._failure
         return failure if isinstance(failure, SourceError) else None
 
-    def take(self, n: int) -> bytes:
+    def take(self, n: int, *, strict: bool = False) -> bytes:
         """Return up to ``n`` bytes; ``b""`` means the source has ended cleanly.
 
+        A codec may be handed the probe, byte number ``max_input + 1``: looking at it is not a
+        violation, taking it is (SG-R-INP-01). The probe never comes together with bytes before
+        it, so a codec that fills a read-ahead buffer is not charged for a byte it never uses; a
+        codec that only looked at it gives it back with :meth:`unread`. The layer guard decides
+        at the end of every codec step, by :meth:`check_taken`.
+
+        ``strict`` (identity layers) never hands out the probe: passing a byte on is taking it.
+
         Raises:
-            InputLimitError: the codec asks for byte number ``max_input + 1``.
+            InputLimitError: the probe is taken in strict mode, or more is asked after it.
             SourceError: the source raised.
             InternalError: the source broke its contract.
         """
@@ -83,20 +91,41 @@ class InputMeter:
             return b""
         if self._pos == len(self._pending) and not self._fill():
             return b""
-        if self._max_input and self._consumed >= self._max_input:
+        count = min(n, len(self._pending) - self._pos)
+        if self._max_input:
+            room = self._max_input - self._consumed
+            if room < 0 or (strict and room == 0):
+                self._failure = InputLimitError(
+                    f"the stream needs more than {self._max_input} input bytes",
+                    layer=self._layer,
+                    limit=self._max_input,
+                )
+                raise fresh(self._failure)
+            if strict:
+                count = min(count, room)
+            else:
+                count = min(count, room + 1)
+                if count > 1 and count == room + 1:
+                    count -= 1  # the probe comes alone, when the codec asks again
+        chunk = self._pending[self._pos : self._pos + count]
+        self._pos += count
+        self._consumed += count
+        return chunk
+
+    def check_taken(self) -> InputLimitError | None:
+        """The end-of-step check (SG-R-INP-01): has the codec taken byte ``max_input + 1``?
+
+        Only the count of bytes taken matters, never what was fetched. A byte given back with
+        :meth:`unread` is not taken.
+        """
+        if self._max_input and self._consumed > self._max_input:
             self._failure = InputLimitError(
                 f"the stream needs more than {self._max_input} input bytes",
                 layer=self._layer,
                 limit=self._max_input,
             )
-            raise fresh(self._failure)
-        count = min(n, len(self._pending) - self._pos)
-        if self._max_input:
-            count = min(count, self._max_input - self._consumed)
-        chunk = self._pending[self._pos : self._pos + count]
-        self._pos += count
-        self._consumed += count
-        return chunk
+            return fresh(self._failure)  # type: ignore[return-value]
+        return None
 
     def take_exact(self, n: int, what: str) -> bytes:
         """Return exactly ``n`` bytes or raise :class:`CorruptError` if the input ends.

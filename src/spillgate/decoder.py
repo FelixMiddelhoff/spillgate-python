@@ -162,7 +162,7 @@ class _Passthrough:
         self._meter = meter
 
     def read(self, n: int) -> bytes:
-        return self._meter.take(n)
+        return self._meter.take(n, strict=True)  # taking = passing on
 
 
 def _check_codec_name(name: object) -> None:

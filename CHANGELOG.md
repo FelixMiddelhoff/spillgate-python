@@ -2,6 +2,11 @@
 
 Versions below 1.0 may still change the API.
 
+## Unreleased
+
+- `max_input` (SG-R-INP-01, corpus 0.2.0): taking byte `max_input + 1` is `input_limit`, looking at it is not. Trailing data after a complete stream whose size equals `max_input` is now `corrupt` (it was `input_limit`); a stream that needs the next byte is `input_limit`; the take count is checked at the end of every codec step. Identity keeps the strict behaviour. Known edge: a probe byte that could start another gzip member or zstd frame is taken (`input_limit` for `max_input` = stream size).
+- Conformance corpus 0.2.0 (370 vectors, adds SG-V-BND-0041..0057).
+
 ## 0.1.0 - 2026-11-11
 
 First version. The Python implementation of the spillgate specification.

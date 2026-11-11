@@ -112,23 +112,31 @@ class LayerGuard:
         return self._replay()
 
     def _call_codec(self, n: int) -> bytes:
-        """One codec read, with its failures contained (SG-R-CDC-08)."""
+        """One codec read, with its failures contained (SG-R-CDC-08).
+
+        At the end of every step the input meter is asked whether the codec took byte
+        ``max_input + 1``; that overrides whatever the step returned (SG-R-INP-01).
+        """
         try:
             data = self._as_bytes(self._codec.read(n), n)
         except SpillgateError as error:
-            failure = error.with_layer(self._layer)
+            failure = self._meter.check_taken() or error.with_layer(self._layer)
             self._done = fresh(failure)
             try:
                 raise failure from failure.__cause__
             finally:
                 del failure  # the traceback would otherwise keep this frame, and the guard, alive
         except Exception as error:
-            failure = self._classify(error)
+            failure = self._meter.check_taken() or self._classify(error)
             self._done = fresh(failure)
             try:
                 raise failure from (failure.__cause__ or error)
             finally:
                 del failure
+        limit = self._meter.check_taken()
+        if limit is not None:
+            self._done = fresh(limit)
+            raise limit
         return data
 
     def _as_bytes(self, data: object, n: int) -> bytes:

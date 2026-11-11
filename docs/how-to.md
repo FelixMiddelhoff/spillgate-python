@@ -89,6 +89,17 @@ If the compressed size is not already bounded by your web server, framework or b
 `max_input`. spillgate bounds the output; it is not a substitute for limiting how many bytes
 you accept. Do both.
 
+The limit is on bytes the decoder *takes*, byte number `max_input + 1` is `input_limit`. Looking
+at that byte is not taking it (spillgate never requests more than `max_input + 1` bytes from your
+source in total). So a complete stream of exactly `max_input` bytes followed by trailing data is
+`corrupt` (trailing data), not `input_limit`; a stream that needs the next byte to go on is
+`input_limit`; only if your source really ends there, the stream is truncated (`corrupt`).
+Without a decoder (identity), a body of more than `max_input` bytes is `input_limit` after
+exactly `max_input` bytes were delivered. Edge: if the byte after a complete gzip member or
+zstd frame could start another one (gzip `0x1f`; zstd `0x28`, `0x50`..`0x5f`), it is taken, so
+the result is `input_limit` for `max_input` = stream size and `corrupt` for one more. Only layer 1
+carries `max_input`.
+
 ## 3. Wire it in
 
 Create one `Decoder` at start-up and share it. It is immutable and safe to use from many

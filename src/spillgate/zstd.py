@@ -161,6 +161,11 @@ class ZstdReader:
             if self._frames > 0:
                 return False
             raise CorruptError("zstd: an empty input is not a zstd stream")
+        if self._frames > 0 and first[0] != 0x28 and first[0] & 0xF0 != 0x50:
+            # Cannot start another frame: trailing data. The byte was only looked at, so it is
+            # given back and not taken (SG-R-INP-01).
+            self._source.unread(first)
+            raise CorruptError("zstd: data that is not a zstd frame follows the stream")
         magic = _little_endian(first + self._source.take_exact(3, "zstd magic number"))
         if magic == _FRAME_MAGIC:
             self._start_frame(magic)
